@@ -1,1 +1,895 @@
+*&---------------------------------------------------------------------*
+*& Report YX_TEC_RESET_TR_TASK
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT yx_tec_reset_tr_task.
 
+TYPES: BEGIN OF e070t_tt.
+TYPES: korrdev     TYPE trcateg,
+       strkorr     TYPE strkorr,
+       parent_type TYPE trfunction,
+       parent_txt  TYPE ddtext,
+       parent_own  TYPE tr_as4user,
+       trkorr      TYPE trkorr,
+       trfunction  TYPE trfunction,
+       funct_txt   TYPE ddtext,
+       trstatus	   TYPE trstatus,
+       as4text     TYPE as4text,
+*       tarsystem   TYPE tr_target,
+       as4user     TYPE tr_as4user,
+       as4date     TYPE as4date,
+       as4time     TYPE as4time,
+       line_color  TYPE char4,
+       END OF e070t_tt.
+
+TYPES: e070t_t TYPE STANDARD TABLE OF e070t_tt.
+
+
+
+INCLUDE <icon>.
+*********
+* Predefine a local class for event handling to allow the
+* declaration of a reference variable before the class is defined.
+CLASS lcl_event_receiver DEFINITION DEFERRED.
+*
+*********
+
+CONSTANTS:
+  lc_trfunction_q    TYPE trfunction VALUE 'Q', "Customizing Task
+  lc_trfunction_r    TYPE trfunction VALUE 'R', "Repair
+  lc_trfunction_s    TYPE trfunction VALUE 'S', "Development Task
+  lc_trfunction_t    TYPE trfunction VALUE 'T', "Transport of Copies
+  lc_trfunction_x    TYPE trfunction VALUE 'X', "Unclassified
+  lc_trstatus_d      TYPE trstatus   VALUE 'D', "Modifiable
+  lc_trstatus_n      TYPE trstatus   VALUE 'N', "Modifiable
+  lc_trstatus_r      TYPE trstatus   VALUE 'R', "Released
+  lc_linecolor_green TYPE char4      VALUE 'C500' "green
+  .
+
+DATA:
+  lt_selection   TYPE e070t_t,
+  ls_e070        TYPE e070,
+  ls_request     TYPE trwbo_request,
+  lo_alv         TYPE REF TO cl_gui_alv_grid,
+  event_receiver TYPE REF TO lcl_event_receiver,
+  l_valid        TYPE c,
+  v_flag,
+  v_data_change,
+  v_row          TYPE lvc_s_row,
+  v_column       TYPE lvc_s_col,
+  v_row_num      TYPE lvc_s_roid..
+
+****************************************************************
+* LOCAL CLASSES: Definition
+****************************************************************
+*===============================================================
+* class lcl_event_receiver: local class to
+*                         define and handle own functions.
+*
+* Definition:
+* ~~~~~~~~~~~
+CLASS lcl_event_receiver DEFINITION.
+
+  PUBLIC SECTION.
+
+    CLASS-DATA:
+      gv_user TYPE xubname VALUE IS INITIAL,
+      gv_datu TYPE dats    VALUE IS INITIAL,
+      gv_mode TYPE xuvalue VALUE IS INITIAL,
+      gv_unas TYPE xfeld   VALUE IS INITIAL,
+      gv_scc1 TYPE xfeld   VALUE IS INITIAL.
+
+    METHODS:
+      handle_toolbar
+        FOR EVENT toolbar OF cl_gui_alv_grid
+        IMPORTING e_object e_interactive,
+
+      handle_user_command
+        FOR EVENT user_command OF cl_gui_alv_grid
+        IMPORTING e_ucomm,
+
+**Hot spot Handler
+      handle_hotspot_click
+        FOR EVENT hotspot_click OF cl_gui_alv_grid
+        IMPORTING e_row_id e_column_id es_row_no,
+
+***Handler to Check the Data Change
+*      handle_data_changed
+*        FOR EVENT data_changed OF cl_gui_alv_grid
+*        IMPORTING er_data_changed
+*                  e_onf4
+*                  e_onf4_before
+*                  e_onf4_after,
+
+**Double Click Handler
+      handle_double_click
+        FOR EVENT double_click OF cl_gui_alv_grid
+        IMPORTING e_row e_column es_row_no.
+
+  PRIVATE SECTION.
+
+ENDCLASS.
+*
+* lcl_event_receiver (Definition)
+*===============================================================
+CLASS tr_helper DEFINITION.
+
+  PUBLIC SECTION.
+
+    CLASS-METHODS:
+      tr_set_status_to_changeable
+        IMPORTING iv_trkorr         TYPE trkorr
+        EXPORTING es_request_header TYPE trwbo_request_header,
+
+      tr_set_status_to_released
+        IMPORTING iv_trkorr  TYPE trkorr
+        EXPORTING es_request TYPE trwbo_request.
+
+ENDCLASS.
+****************************************************************
+* LOCAL CLASSES: Implementation
+****************************************************************
+*===============================================================
+* class lcl_event_receiver (Implementation)
+*
+*
+CLASS lcl_event_receiver IMPLEMENTATION.
+
+  METHOD handle_toolbar.
+* § 2.In event handler method for event TOOLBAR: Append own functions
+*   by using event parameter E_OBJECT.
+    DATA: ls_toolbar  TYPE stb_button.
+*....................................................................
+* E_OBJECT of event TOOLBAR is of type REF TO CL_ALV_EVENT_TOOLBAR_SET.
+* This class has got one attribute, namly MT_TOOLBAR, which
+* is a table of type TTB_BUTTON. One line of this table is
+* defined by the Structure STB_BUTTON (see data deklaration above).
+*
+
+* A remark to the flag E_INTERACTIVE:
+* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*         'e_interactive' is set, if this event is raised due to
+*         the call of 'set_toolbar_interactive' by the user.
+*         You can distinguish this way if the event was raised
+*         by yourself or by ALV
+*         (e.g. in method 'refresh_table_display').
+*         An application of this feature is still unknown... :-)
+
+* append a separator to normal toolbar
+    CLEAR ls_toolbar.
+    MOVE 3 TO ls_toolbar-butn_type.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+* append an icon to show booking table
+    CLEAR ls_toolbar.
+    MOVE 'REFRESH' TO ls_toolbar-function.                      "Refresh
+    MOVE icon_refresh TO ls_toolbar-icon.
+    MOVE 'Refresh List'(111) TO ls_toolbar-quickinfo.
+    MOVE 'Refresh'(112) TO ls_toolbar-text.
+    MOVE abap_true TO ls_toolbar-disabled.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+    MOVE 'SETR' TO ls_toolbar-function.                        "Reset
+    MOVE icon_system_undo TO ls_toolbar-icon.
+    MOVE 'Reset Task'(111) TO ls_toolbar-quickinfo.
+    MOVE 'Reset'(112) TO ls_toolbar-text.
+    MOVE abap_false TO ls_toolbar-disabled.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+    MOVE 'RELE' TO ls_toolbar-function.                         "Release
+    MOVE icon_transport TO ls_toolbar-icon.
+    MOVE 'Release Task'(111) TO ls_toolbar-quickinfo.
+    MOVE 'Release'(112) TO ls_toolbar-text.
+    MOVE abap_false TO ls_toolbar-disabled.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+    MOVE 'TAST' TO ls_toolbar-function.                        "Trasnport Log
+    MOVE icon_display_text TO ls_toolbar-icon.
+    MOVE 'Show Latest ToC Log'(111) TO ls_toolbar-quickinfo.
+    MOVE 'ToC Log'(112) TO ls_toolbar-text.
+    MOVE abap_false TO ls_toolbar-disabled.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+    MOVE 'SORT' TO ls_toolbar-function.                        "Sort & Compress
+    MOVE icon_test TO ls_toolbar-icon.
+    MOVE 'Sort and Compress'(111) TO ls_toolbar-quickinfo.
+    MOVE 'Sort Task and Compress'(112) TO ls_toolbar-text.
+    MOVE abap_false TO ls_toolbar-disabled.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+    MOVE 'SCC1N' TO ls_toolbar-function.                        "SCC1N
+    MOVE icon_copy_object TO ls_toolbar-icon.
+    MOVE 'Copy with SCC1N'(111) TO ls_toolbar-quickinfo.
+    MOVE 'SCC1N'(112) TO ls_toolbar-text.
+    MOVE abap_false TO ls_toolbar-disabled.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+
+  ENDMETHOD.
+*-------------------------------------------------------------------
+  METHOD handle_user_command.
+* § 3.In event handler method for event USER_COMMAND: Query your
+*   function codes defined in step 2 and react accordingly.
+
+    DATA: lt_rows        TYPE lvc_t_row,
+          lr_trkorr      TYPE RANGE OF trkorr,
+          lr_trfunction  TYPE RANGE OF trfunction,
+          lr_target_clnt TYPE RANGE OF cccflowv2-client,
+          lt_batchdata   TYPE STANDARD TABLE OF bdcdata,
+          lt_msg         TYPE STANDARD TABLE OF bdcmsgcoll,
+          ls_request     TYPE trwbo_request,
+          lv_exit        TYPE c VALUE IS INITIAL,
+          lv_where       TYPE string,
+          lv_trkorr_toc  TYPE trkorr.
+
+    CALL METHOD lo_alv->get_selected_rows
+      IMPORTING
+        et_index_rows = lt_rows.
+
+    LOOP AT lt_rows REFERENCE INTO DATA(lr_row).
+      ASSIGN lt_selection[ lr_row->index ] TO FIELD-SYMBOL(<lf_task>).
+    ENDLOOP.
+
+    CALL METHOD cl_gui_cfw=>flush.
+    IF sy-subrc NE 0.
+*         add your handling, for example
+      CALL FUNCTION 'POPUP_TO_INFORM'
+        EXPORTING
+          titel = sy-repid
+          txt2  = sy-subrc
+          txt1  = 'Error in Flush'(500).
+    ELSE.
+      CASE e_ucomm.
+        WHEN 'REFRESH'.
+          PERFORM select_data USING lcl_event_receiver=>gv_user
+                                    lcl_event_receiver=>gv_datu
+                                    lcl_event_receiver=>gv_mode
+                                    lcl_event_receiver=>gv_unas
+                              CHANGING lt_selection[].
+          CALL METHOD cl_gui_cfw=>flush.
+          IF sy-subrc NE 0.
+            lo_alv->check_changed_data( ).
+            lo_alv->refresh_table_display( ).
+          ENDIF.
+
+        WHEN 'SETR'.
+          CHECK <lf_task>-trstatus <> lc_trstatus_d.
+          tr_helper=>tr_set_status_to_changeable( EXPORTING iv_trkorr = <lf_task>-trkorr
+                                                  IMPORTING es_request_header = ls_request-h ).
+*          ls_e070 = CORRESPONDING #( BASE ( ls_e070 ) <lf_task> ).
+*          ls_e070-trstatus = lc_trstatus_d.
+*          MODIFY e070 FROM ls_e070.
+          IF sy-subrc IS INITIAL.
+            MESSAGE s018(tr) WITH ls_request-h-strkorr ls_request-h-trkorr sy-uname. "& request/task & was changed by user &
+            CLEAR <lf_task>-line_color.         "Reset line color
+            <lf_task>-trstatus = lc_trstatus_d. "Reset ALV status
+          ENDIF.
+
+        WHEN 'RELE'.
+          CHECK <lf_task>-trstatus <> lc_trstatus_r.
+          tr_helper=>tr_set_status_to_released( EXPORTING iv_trkorr  = <lf_task>-trkorr
+                                                IMPORTING es_request = ls_request ).
+          IF sy-subrc <> 0.
+            MESSAGE e492(tr) WITH <lf_task>-trkorr.  "Request &1 has not been released
+          ELSE.
+            MESSAGE s781(tr) WITH ls_request-h-trkorr ls_request-h-strkorr. "Task &1 has been released to request &2
+            <lf_task>-line_color = lc_linecolor_green. "Reset line color
+            <lf_task>-trstatus = lc_trstatus_r.        "Reset ALV status
+          ENDIF.
+*          CALL FUNCTION 'TRINT_TDR_USER_COMMAND'
+*            EXPORTING
+*              iv_object  = <lf_task>-trkorr
+*              iv_type    = space
+*              iv_command = e_ucomm
+*            IMPORTING
+*              ev_exit    = lv_exit.
+
+        WHEN 'SORT'.
+          CHECK <lf_task>-trstatus <> lc_trstatus_r.
+          CALL FUNCTION 'TRINT_TDR_USER_COMMAND'
+            EXPORTING
+              iv_object  = <lf_task>-trkorr
+              iv_type    = space
+              iv_command = e_ucomm
+            IMPORTING
+              ev_exit    = lv_exit.
+          IF sy-subrc <> 0.
+            MESSAGE e041(tk). "Error saving objects for request/task &1
+          ELSE.
+            MESSAGE s148(tk). "Object and key entries were sorted and compressed
+          ENDIF.
+
+        WHEN 'SCC1N'.
+          DATA(lv_target) = |100|.
+          TRY.
+
+*           Build ranges
+              lr_trkorr[] = VALUE #( ( sign   = 'I'
+                                       option = 'EQ'
+                                       low    = <lf_task>-trkorr
+                                       high   = '' ) ).
+
+              lr_trfunction[] = VALUE #( ( sign   = 'I'
+                                           option = 'EQ'
+                                           low    = <lf_task>-trfunction
+                                           high   = '' ) ).
+
+              lr_target_clnt[] = VALUE #( ( sign   = 'I'
+                                            option = 'EQ'
+                                            low    = lv_target
+                                            high   = '' ) ).
+
+*           Call SCC1N
+              IF gv_scc1 = abap_false.
+                SUBMIT rs_scc1_trkorr_batch_copy VIA SELECTION-SCREEN
+                                                 WITH trkorr   IN lr_trkorr
+                                                 WITH trfunct  IN lr_trfunction
+                                                 WITH src_clnt = sy-mandt
+                                                 WITH trg_clnt IN lr_target_clnt
+*                                                 WITH test_run = abap_true
+                                                 AND RETURN
+                                                 .
+              ELSE.
+                SUBMIT rs_scc1_trkorr_batch_copy WITH trkorr   IN lr_trkorr
+                                                 WITH trfunct  IN lr_trfunction
+                                                 WITH src_clnt = sy-mandt
+                                                 WITH trg_clnt IN lr_target_clnt
+*                                                 WITH test_run = abap_true
+                                                 AND RETURN
+                                                 .
+              ENDIF.
+
+            CATCH cx_root INTO DATA(lx_root).
+
+          ENDTRY.
+          IF lx_root IS NOT INITIAL.
+            MESSAGE 'Error while calling SCC1N' TYPE 'S' DISPLAY LIKE 'E'.
+          ELSE.
+            MESSAGE s723(tr) WITH |{ sy-sysid } { sy-mandt }| <lf_task>-trkorr |{ sy-sysid } { lv_target }|. "Objects passed from &1 (&2) to &3
+          ENDIF.
+
+        WHEN 'TAST'.                    "Transport Log
+          lv_where = |{ <lf_task>-strkorr }%|.
+          SELECT SINGLE
+            FROM  e071 AS o
+            INNER JOIN e070 AS e
+            ON o~trkorr = e~trkorr
+          FIELDS MAX( o~trkorr )
+           WHERE o~obj_name LIKE @lv_where
+             AND o~pgmid  = 'CORR'
+             AND o~object = 'MERG'
+             AND e~trfunction = @lc_trfunction_t
+             INTO @lv_trkorr_toc.
+
+          DATA(ls_popup) = VALUE strhi_popup( start_column = 1
+                                              start_row    = 1
+                                              end_column   = 250
+                                              end_row      = 250
+                                               ) .
+          IF lv_trkorr_toc IS NOT INITIAL.
+            CALL FUNCTION 'TRINT_TDR_USER_COMMAND'
+              EXPORTING
+                iv_object  = lv_trkorr_toc
+                iv_type    = space
+                iv_command = e_ucomm
+              IMPORTING
+                ev_exit    = lv_exit.
+            IF sy-subrc <> 0.
+              CALL FUNCTION 'POPUP_TO_INFORM'
+                EXPORTING
+                  titel = sy-repid
+                  txt1  = |Error while producing ToC Log for { lv_trkorr_toc }.|
+                  txt2  = space.
+            ENDIF.
+          ELSE.
+*             add your handling, for example
+            CALL FUNCTION 'POPUP_TO_INFORM'
+              EXPORTING
+                titel = sy-repid
+                txt1  = |No ToCs released so far for { <lf_task>-strkorr }.|
+                txt2  = space.
+          ENDIF.
+
+      ENDCASE.
+
+      COMMIT WORK.
+      lo_alv->refresh_table_display( ).
+      CLEAR: ls_request.
+
+    ENDIF.
+  ENDMETHOD.                           "handle_user_command
+*-----------------------------------------------------------------
+  METHOD handle_hotspot_click .
+
+    CLEAR: v_row,v_column,v_row_num.
+
+    v_row     = e_row_id.
+    v_column  = e_column_id.
+    v_row_num = es_row_no.
+*    MESSAGE i000 WITH v_row 'clicked'.
+
+  ENDMETHOD. "handle_hotspot_click
+*-----------------------------------------------------------------
+  METHOD  handle_double_click.
+
+    DATA: lt_rows TYPE lvc_t_row,
+          lv_exit TYPE c.
+
+    CLEAR: v_row,v_column,v_row_num.
+    v_row  = e_row.
+    v_column = e_column.
+    v_row_num = es_row_no.
+
+    CALL METHOD lo_alv->get_selected_rows
+      IMPORTING
+        et_index_rows = lt_rows.
+
+    LOOP AT lt_rows REFERENCE INTO DATA(lr_row).
+      ASSIGN COMPONENT e_column OF STRUCTURE lt_selection[ lr_row->index ] TO FIELD-SYMBOL(<lv_object>). "Get Task or Request
+    ENDLOOP.
+
+    CASE e_column.
+      WHEN 'STRKORR' OR 'TRKORR'.
+        CALL FUNCTION 'TRINT_TDR_USER_COMMAND'
+          EXPORTING
+            iv_object  = <lv_object>
+            iv_type    = space
+            iv_command = CONV syst-ucomm( |REQUEST_SHOW| )
+          IMPORTING
+            ev_exit    = lv_exit.
+*          CALL FUNCTION 'TR_SHOW_REQUEST'
+*            EXPORTING
+*              iv_trkorr = <lv_transport>
+*              iv_popup  = abap_true.
+
+
+      WHEN 'PARENT_OWN' OR 'AS4USER'.
+        CALL FUNCTION 'TRINT_TDR_USER_COMMAND'
+          EXPORTING
+            iv_object  = <lv_object>
+            iv_type    = space
+            iv_command = CONV syst-ucomm( |SHOW_USER| )
+          IMPORTING
+            ev_exit    = lv_exit.
+
+      WHEN OTHERS.
+
+    ENDCASE.
+
+  ENDMETHOD.                    "handle_double_click
+*-----------------------------------------------------------------
+ENDCLASS.
+*
+* lcl_event_receiver (Implementation)
+*===================================================================
+CLASS tr_helper IMPLEMENTATION.
+  METHOD tr_set_status_to_changeable.
+*   !!! COPY OF TRINT_SET_TO_STATUS_CHANGEABLE with modifications !!!
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(IV_TRKORR) TYPE  TRKORR
+*"  EXPORTING
+*"     REFERENCE(ES_REQUEST_HEADER) TYPE  TRWBO_REQUEST_HEADER
+*"  EXCEPTIONS
+*"      WRONG_REQUEST
+*"      WRONG_STATUS
+*"      NO_AUTHORIZATION
+*"      UPDATE_ERROR
+*"----------------------------------------------------------------------
+
+    CONSTANTS: lc_waiting_period  TYPE i   VALUE 36. "hours
+
+    DATA: lv_difference     TYPE i,
+          lv_textline(100)  TYPE c,
+          lv_textline2(100) TYPE c,
+          lv_reset_status   TYPE trboolean,
+          ls_e070           TYPE e070,
+          lv_msgv2          LIKE sy-msgv2,
+          lv_msgv3          LIKE sy-msgv3,
+          lv_trkorr         TYPE trkorr,
+          ls_commit_task    TYPE e070.
+
+*-read request---------------------------------------------------------*
+    es_request_header-trkorr = iv_trkorr.
+    CALL FUNCTION 'TRINT_READ_REQUEST_HEADER'
+      EXPORTING
+        iv_read_e070  = 'X'
+        iv_read_e070c = 'X'
+      CHANGING
+        cs_request    = es_request_header
+      EXCEPTIONS
+        OTHERS        = 1.
+    IF sy-subrc <> 0.
+*      current_message_raising wrong_request.
+    ENDIF.
+
+**-check request changeable---------------------------------------------*
+*  CALL FUNCTION 'TRINT_CHECK_REQUEST_CHANGEABLE'
+*       EXPORTING
+*            is_request_header         = es_request_header
+*            iv_allow_status_open      = 'X'
+*       EXCEPTIONS
+*            request_already_released  = 1
+*            user_has_no_authority     = 2
+*            USER_IS_NOT_OWNER         = 2
+*            OTHERS                    = 3.
+*
+*  CASE sy-subrc.
+*    WHEN 0.
+*    WHEN 1. current_message_raising wrong_status.
+*    WHEN 2. current_message_raising no_authorization.
+*    WHEN 3. current_message_raising wrong_request.
+*  ENDCASE.
+*
+*  CLEAR lv_trkorr.
+
+    IF es_request_header-trstatus EQ sctsc_state_export_started.
+
+*   Check for an open commit task
+      SELECT SINGLE * FROM e070 INTO ls_commit_task
+              WHERE strkorr EQ iv_trkorr AND
+                    trfunction EQ sctsc_type_commit AND
+                    trstatus EQ sctsc_state_export_started.
+
+      IF sy-subrc NE 0 OR ls_commit_task IS INITIAL.
+*     No open commit task, check the export status of the request
+        lv_trkorr = iv_trkorr.
+      ENDIF.
+
+      IF ls_commit_task IS NOT INITIAL.
+*     Check status of the commit task
+        TRY.
+            NEW cl_cts_gto_worklist( )->if_cts_gto_worklist~get_worklist( IMPORTING worklist = DATA(lt_worklist) ).
+          CATCH cx_cts_gto_exception INTO DATA(exc).
+*         No worklist item, check export status of the commit task
+            lv_trkorr = ls_commit_task-trkorr.
+        ENDTRY.
+
+        READ TABLE lt_worklist INTO DATA(ls_worklist) WITH KEY trkorr = ls_commit_task-trkorr.
+        IF ls_worklist-stepstatus EQ if_cts_gto_worklist=>co_step_status_failed OR
+           ls_worklist-stepstatus EQ if_cts_gto_worklist=>co_step_status_invalid.
+*       The commit or export failed => reset is allowed
+          lv_reset_status = 'X'.
+        ELSEIF ls_worklist-step EQ if_cts_gto_worklist=>co_step_export AND
+               ls_worklist-stepstatus EQ if_cts_gto_worklist=>co_step_status_started.
+*       Export was started, check export status of the commit task
+          lv_trkorr = ls_commit_task-trkorr.
+        ENDIF.
+      ENDIF.
+
+      IF lv_trkorr IS NOT INITIAL.
+* check if export is still running
+* change status of request if
+* 1) export is aborted according to tpstat
+* 2) tpstat doesn't find an export
+*    and the request is longer than 36 hours in status O
+* 3) tpstat says that the export is running
+*    and the request is longer than 36 hours in status O
+*    (that typically means: tp is aborted)
+* 4) tpstat says that the export is finished
+*    and the request is longer than 1 hour in status O
+*    (that typically means: R3trans is aborted, tp continued)
+        CALL FUNCTION 'TR_CHECK_EXPORT_STATUS_TPSTAT'
+          EXPORTING
+            iv_trkorr          = lv_trkorr
+          EXCEPTIONS
+            export_is_running  = 1
+            export_is_finished = 2
+            export_is_aborted  = 3
+            no_export_found    = 4.
+        CASE sy-subrc.
+          WHEN 1 OR 4.
+            lv_difference = ( sy-datum - es_request_header-as4date ) * 24
+                          + ( sy-uzeit - es_request_header-as4time ) DIV 3600.
+            IF lv_difference > lc_waiting_period.
+              lv_reset_status = 'X'.
+            ENDIF.
+          WHEN 3.
+            lv_reset_status = 'X'.
+          WHEN 2.
+            lv_difference = ( sy-datum - es_request_header-as4date ) * 24
+                          + ( sy-uzeit - es_request_header-as4time ) DIV 3600.
+            IF lv_difference > 1.
+              lv_reset_status = 'X'.
+            ENDIF.
+        ENDCASE.
+      ENDIF.
+    ELSEIF es_request_header-trstatus EQ sctsc_state_preparation
+        OR es_request_header-trstatus EQ sctsc_state_released.  "necessarily added
+*   Request is in preparation.
+*   In this case it is allowed to switch to modifiable.
+      lv_reset_status = 'X'.
+    ELSE.
+      MESSAGE e129(tw) WITH iv_trkorr es_request_header-trstatus. "RAISING wrong_status.
+    ENDIF.
+
+*   update status and timestamp of request
+    IF lv_reset_status = 'X'.
+
+*---write action log--------------------------------------------------*
+      lv_msgv2 = sy-uname.
+      lv_msgv3 = iv_trkorr.
+      CALL FUNCTION 'TRINT_APPEND_COMM_SYSLOG_ENTRY'
+        EXPORTING
+          wi_msgid      = 'TK'
+          wi_msgno      = '466'
+          wi_msgv2      = lv_msgv2
+          wi_msgv3      = lv_msgv3
+          wi_trfunction = es_request_header-trfunction
+          wi_trkorr     = iv_trkorr.
+
+*---update request header----------------------------------------------*
+      es_request_header-trstatus = sctsc_state_changeable.
+      MOVE-CORRESPONDING es_request_header TO ls_e070.
+
+      CALL FUNCTION 'TRINT_UPDATE_COMM_HEADER'
+        EXPORTING
+          wi_e070     = ls_e070
+          wi_sel_e070 = 'X'
+        EXCEPTIONS
+          OTHERS      = 1.
+      IF   sy-subrc = 1.
+*        current_message_raising update_error.
+      ENDIF.
+
+      IF ls_commit_task IS NOT INITIAL.
+*     Set the status of the commit task to released
+        ls_commit_task-trstatus = sctsc_state_released.
+        CALL FUNCTION 'TRINT_UPDATE_COMM_HEADER'
+          EXPORTING
+            wi_e070     = ls_commit_task
+            wi_sel_e070 = 'X'
+          EXCEPTIONS
+            OTHERS      = 1.
+        IF   sy-subrc = 1.
+*          current_message_raising update_error.
+        ENDIF.
+
+*     Clear the table SCTS_GTO_WORKLST and E070_GTO_TASK
+*     Direct SQL commands, because currently there is no API for delete
+        DELETE FROM scts_gto_worklst WHERE trkorr = ls_commit_task-trkorr.
+        DELETE FROM e070_gto_task WHERE task = ls_commit_task-trkorr.
+      ENDIF.
+
+    ELSE.
+      MESSAGE e568(tk) WITH iv_trkorr. "RAISING wrong_status.
+    ENDIF.
+
+  ENDMETHOD.
+  METHOD tr_set_status_to_released.
+
+    CALL FUNCTION 'TR_RELEASE_REQUEST'
+      EXPORTING
+        iv_trkorr                  = iv_trkorr
+*       iv_dialog                  = 'X'
+*       iv_as_background_job       = ' '
+*       iv_success_message         = 'X'
+*       iv_display_export_log      = 'X'
+*       iv_simulation              = ' '
+        iv_without_locking         = abap_false
+*       iv_no_release_on_atc_error = ' '
+*       iv_atc_options             =
+      IMPORTING
+        es_request                 = es_request
+*       et_deleted_tasks           =
+      EXCEPTIONS
+        cts_initialization_failure = 1
+        enqueue_failed             = 2
+        no_authorization           = 3
+        invalid_request            = 4
+        request_already_released   = 5
+        repeat_too_early           = 6
+        error_in_export_methods    = 7
+        object_check_error         = 8
+        docu_missing               = 9
+        db_access_error            = 10
+        action_aborted_by_user     = 11
+        export_failed              = 12
+        OTHERS                     = 13.
+
+  ENDMETHOD.
+ENDCLASS.
+
+SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE TEXT-b01.
+  PARAMETERS: p_user TYPE xubname OBLIGATORY MATCHCODE OBJECT user_comp,
+              p_datu TYPE dats OBLIGATORY VALUE CHECK,
+              p_unas TYPE xfeld AS CHECKBOX,
+              p_scc1 TYPE xfeld AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK b01.
+
+INITIALIZATION.
+
+  IF sy-sysid(1) <> |E| OR sy-mandt <> |010|.
+    MESSAGE ID 'TK' TYPE 'E' NUMBER 294 WITH sy-mandt.
+  ENDIF.
+
+* Set Defaults
+  p_user = sy-uname.
+  p_datu = sy-datum - 90.
+  p_unas = abap_true.
+
+  GET PARAMETER ID 'YX_TEC_RESET_TR_TASK' FIELD FINAL(p_mode).
+
+* Get fixed values for TRFUNCTION domain
+  CAST cl_abap_elemdescr( cl_abap_typedescr=>describe_by_name( 'TRFUNCTION' ) )->get_ddic_fixed_values(
+    EXPORTING
+      p_langu        = sy-langu
+    RECEIVING
+      p_fixed_values = DATA(lt_trfunc_fixvals)
+    EXCEPTIONS
+      not_found      = 1
+      no_ddic_type   = 2
+      OTHERS         = 3 )
+      .
+
+AT SELECTION-SCREEN OUTPUT.
+* Disable User when not in EXPERT mode
+  IF p_mode <> 'EXPERT'.
+    LOOP AT SCREEN.
+      IF screen-name = 'P_USER'.
+        screen-input = '0'.
+        MODIFY SCREEN.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+START-OF-SELECTION.
+
+  lcl_event_receiver=>gv_user = p_user.
+  lcl_event_receiver=>gv_datu = p_datu.
+  lcl_event_receiver=>gv_mode = p_mode.
+  lcl_event_receiver=>gv_unas = p_unas.
+  lcl_event_receiver=>gv_scc1 = p_scc1.
+
+* Perform selection
+  PERFORM select_data USING p_user
+                            p_datu
+                            p_mode
+                            p_unas
+                   CHANGING lt_selection[].
+
+  lo_alv = NEW cl_gui_alv_grid( i_parent      = cl_gui_container=>default_screen " in default container einbetten
+                                i_appl_events = abap_true ).                     " Ereignisse als Applikationsevents registrieren
+
+* Feldkatalog automatisch durch SALV-Objekte erstellen lassen
+  DATA: o_salv TYPE REF TO cl_salv_table.
+
+  TRY.
+      cl_salv_table=>factory( IMPORTING
+                                r_salv_table = o_salv
+                              CHANGING
+                                t_table      = lt_selection ).
+    CATCH cx_salv_msg.
+      WRITE: |Error in ALV.|.
+  ENDTRY.
+  DATA(it_fcat) = cl_salv_controller_metadata=>get_lvc_fieldcatalog( r_columns      = o_salv->get_columns( )
+                                                                     r_aggregations = o_salv->get_aggregations( ) ).
+
+  LOOP AT it_fcat REFERENCE INTO DATA(lr_fieldcat) WHERE fieldname = |LINE_COLOR|.
+    lr_fieldcat->no_out = abap_true. "hide color column
+  ENDLOOP.
+
+* Layout des ALV setzen
+  DATA(lv_layout) = VALUE lvc_s_layo( zebra      = abap_true             " ALV-Control: Alternierende Zeilenfarbe (Zebramuster)
+                                      cwidth_opt = 'A'                   " ALV-Control: Spaltenbreite optimieren
+                                      grid_title = 'Transport Tasks'     " ALV-Control: Text der Titelzeile
+                                      info_fname = 'line_color'          " ALV-Control: Farbe der änderbaren Zeilen
+                                      ).
+
+* ALV anzeigen
+  lo_alv->set_table_for_first_display( EXPORTING
+                                        i_bypassing_buffer = abap_false  " Puffer ausschalten
+                                        i_save             = 'A'         " Anzeigevariante sichern
+                                        is_layout          = lv_layout   " Layout
+                                      CHANGING
+                                        it_fieldcatalog    = it_fcat         " Feldkatalog
+                                        it_outtab          = lt_selection ). " Ausgabetabelle
+*                                        IT_SORT            = GT_SORT ).
+
+* Focus auf ALV setzen
+  cl_gui_alv_grid=>set_focus( control = lo_alv ).
+
+* leere SAP-Toolbar ausblenden
+  cl_abap_list_layout=>suppress_toolbar( ).
+
+* erzwingen von cl_gui_container=>default_screen
+  WRITE: space.
+
+********
+* ->Create Object to receive events and link them to handler methods.
+* When the ALV Control raises the event for the specified instance
+* the corresponding method is automatically called.
+*
+  CREATE OBJECT event_receiver.
+  SET HANDLER event_receiver->handle_user_command FOR lo_alv.
+  SET HANDLER event_receiver->handle_toolbar FOR lo_alv.
+  SET HANDLER event_receiver->handle_hotspot_click FOR lo_alv.
+  SET HANDLER event_receiver->handle_double_click FOR lo_alv.
+*
+********
+
+* § 4.Call method 'set_toolbar_interactive' to raise event TOOLBAR.
+  CALL METHOD lo_alv->set_toolbar_interactive.
+
+*  ENDIF.                               "IF grid1 IS INITIAL
+  CALL METHOD cl_gui_control=>set_focus EXPORTING control = lo_alv.
+*&---------------------------------------------------------------------*
+*& Form select_data
+*&---------------------------------------------------------------------*
+FORM select_data USING p_user TYPE xubname
+                       p_datu TYPE dats
+                       p_mode TYPE xuvalue
+                       p_unas TYPE xfeld
+              CHANGING ct_selection TYPE e070t_t.
+
+
+* Get Tasks for user.
+  SELECT
+  FROM e070 AS e
+  INNER JOIN e07t AS t
+  ON e~trkorr = t~trkorr
+  FIELDS e~*, t~as4text
+  WHERE e~as4user = @p_user
+    AND e~as4date >= @p_datu
+    AND t~langu = @sy-langu
+  AND (
+  e~trfunction = @lc_trfunction_q OR
+  e~trfunction = @lc_trfunction_r OR
+  e~trfunction = @lc_trfunction_s OR
+  e~trfunction = @lc_trfunction_x
+  )
+  ORDER BY e~trkorr DESCENDING
+  INTO CORRESPONDING FIELDS OF TABLE @ct_selection.
+
+*   Get Parent Transport Requests.
+  SELECT
+  FROM e070
+  FIELDS *
+  FOR ALL ENTRIES IN @ct_selection
+  WHERE trkorr = @ct_selection-strkorr
+  INTO TABLE @DATA(lt_e070_tr).
+
+  SORT lt_e070_tr BY trkorr as4date DESCENDING.
+
+*     Get Project Assignments.
+  SELECT
+  FROM e070a
+  FIELDS *
+  FOR ALL ENTRIES IN @lt_e070_tr
+  WHERE trkorr = @lt_e070_tr-trkorr
+    AND attribute = 'SAP_CTS_PROJECT'
+  INTO TABLE @DATA(lt_e070a_tr).
+
+*       Get rid of unnecessary entries, where Transport Request status is R = Released
+  LOOP AT lt_e070_tr REFERENCE INTO DATA(lr_transport) WHERE trstatus = lc_trfunction_r.
+    DELETE ct_selection WHERE strkorr = lr_transport->trkorr.
+  ENDLOOP.
+  DELETE lt_e070_tr WHERE trstatus = lc_trfunction_r.
+
+  IF p_unas = abap_true.
+    LOOP AT lt_e070_tr REFERENCE INTO lr_transport.
+      IF NOT line_exists( lt_e070a_tr[ trkorr = lr_transport->trkorr ] ).
+        DELETE ct_selection WHERE strkorr = lr_transport->trkorr.
+        DELETE lt_e070_tr   WHERE trkorr  = lr_transport->trkorr.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+  SORT ct_selection BY strkorr trfunction as4date DESCENDING.
+  IF p_mode <> 'EXPERT'.
+    DELETE ADJACENT DUPLICATES FROM ct_selection COMPARING strkorr trfunction.
+  ENDIF.
+*  SORT lt_e070_user BY strkorr as4date DESCENDING.
+
+*       Add color, set parent type.
+  LOOP AT ct_selection REFERENCE INTO DATA(lr_e070_user).
+    IF NOT lr_e070_user->trstatus = lc_trstatus_d.
+      lr_e070_user->line_color = lc_linecolor_green. "green
+    ENDIF.
+    lr_e070_user->funct_txt   = lt_trfunc_fixvals[ low = lr_e070_user->trfunction ]-ddtext.
+    lr_e070_user->parent_type = lt_e070_tr[ trkorr = lr_e070_user->strkorr ]-trfunction.
+    lr_e070_user->parent_txt  = lt_trfunc_fixvals[ low = lr_e070_user->parent_type ]-ddtext.
+    lr_e070_user->parent_own = lt_e070_tr[ trkorr = lr_e070_user->strkorr ]-as4user.
+  ENDLOOP.
+
+ENDFORM.
